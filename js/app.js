@@ -218,6 +218,7 @@
       h('h1', { class: 'mitte', text: t('appName') }),
       h('p', { class: 'mitte leise', text: t('tagline') }),
       h('p', { class: 'mitte frage', text: t('howMany') }),
+      h('p', { class: 'mitte zaehlt', text: t('everyCounts') }),
       h('p', { class: 'mitte', text: t('homeIntro') }),
       zaehlerKarte,
       eintrag
@@ -611,12 +612,14 @@
     return h('div', { class: 'mitte' },
       h('div', { class: 'erfolg-symbol', 'aria-hidden': 'true', text: '✓' }),
       h('h1', { text: t('thanks') }),
-      h('p', { text: t('sentOk') }),
+      h('p', { class: 'danke-text', text: t('thanksText') }),
+      h('p', { class: 'leise', text: t('sentOk') }),
       letzteId ? h('div', { class: 'karte' }, idBlock(letzteId)) : null,
       h('div', { class: 'knopfstapel' },
         letzteLokalGespeichert && ladeEintrag()
           ? h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', onclick: () => zeige('profil'), text: t('myData') })
           : null,
+        h('a', { class: 'knopf knopf-teilen knopf-breit', href: 'https://wa.me/?text=' + encodeURIComponent(t('shareMsg') + ' https://ezezidime.org'), target: '_blank', rel: 'noopener', text: '📲 ' + t('shareFamily') }),
         h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('start'), text: t('toHome') }))
     );
   }
