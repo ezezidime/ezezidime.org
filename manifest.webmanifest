@@ -1,0 +1,11 @@
+{
+  "name": "Ez Êzîdî me",
+  "short_name": "Ez Êzîdî me",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#FAF5EA",
+  "theme_color": "#FAF5EA",
+  "icons": [
+    { "src": "assets/sonne.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
