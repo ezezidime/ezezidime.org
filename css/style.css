@@ -245,3 +245,19 @@ p { margin: 0 0 12px; }
 .zaehlt { font-size: 17px; font-weight: 600; margin: 0 0 14px; }
 .danke-text { font-size: 17px; line-height: 1.5; margin: 6px 0 12px; }
 .knopf-teilen { background: #25D366; color: #fff; text-decoration: none; text-align: center; display: block; }
+
+/* Version 2: Zahlen, Rangliste, Formular */
+.zahlen { display: flex; justify-content: space-around; gap: 12px; text-align: center; }
+.zahl-block .zaehler-zahl { font-size: 34px; }
+.rang { list-style: none; margin: 8px 0 0; padding: 0; }
+.rang li { margin: 0 0 10px; }
+.rang-zeile { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+.rang-zahl { color: var(--gold-dunkel); font-variant-numeric: tabular-nums; }
+.rang-balken { height: 8px; background: var(--creme-tief); border-radius: 4px; overflow: hidden; margin-top: 3px; }
+.rang-balken span { display: block; height: 100%; background: var(--gold); border-radius: 4px; }
+.klein { font-size: 14px; }
+.dorf-zahl { font-size: 18px; font-weight: 650; color: var(--rot); margin: 0; }
+.karte h3 { margin: 0 0 10px; font-size: 17px; }
+.haken { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 650; padding: 6px 0 14px; cursor: pointer; }
+.haken input { width: 26px; height: 26px; accent-color: var(--rot); }
+.haken.fehler .haken-text { color: var(--rot); }
