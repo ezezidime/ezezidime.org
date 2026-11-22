@@ -31,8 +31,11 @@
       const j = await r.json();
       return j.anzahl;
     },
-    eintragSenden(datei, umschlag) {
-      return postJson('api/eintrag', { datei, umschlag });
+    eintragSenden(datei, umschlag, oeffentlich) {
+      return postJson('api/eintrag', { datei, umschlag, oeffentlich });
+    },
+    async rangliste() {
+      return { anzahl: await this.anzahl(), personen: 0, orte: {}, laender: {} };
     },
     loeschantragSenden(datei, umschlag) {
       return postJson('api/loeschantrag', { datei, umschlag });
@@ -57,13 +60,19 @@
       if (typeof j.anzahl !== 'number') throw new Error('Antwort ungültig');
       return j.anzahl;
     },
-    async senden(aktion, datei, umschlag) {
-      const j = await postJson(this.url(), { aktion, datei, umschlag },
+    async rangliste() {
+      const r = await fetch(this.url() + '?aktion=rangliste', { cache: 'no-store' });
+      const j = await r.json();
+      if (typeof j.anzahl !== 'number') throw new Error('Antwort ungültig');
+      return j;
+    },
+    async senden(aktion, datei, umschlag, oeffentlich) {
+      const j = await postJson(this.url(), { aktion, datei, umschlag, oeffentlich },
         { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       if (!j.ok) throw new Error(j.fehler || 'Fehler');
       return j;
     },
-    eintragSenden(datei, umschlag) { return this.senden('eintrag', datei, umschlag); },
+    eintragSenden(datei, umschlag, oeffentlich) { return this.senden('eintrag', datei, umschlag, oeffentlich); },
     loeschantragSenden(datei, umschlag) { return this.senden('loeschantrag', datei, umschlag); }
   };
 

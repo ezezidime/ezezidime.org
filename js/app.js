@@ -1,11 +1,10 @@
 /*
- * Ez Êzîdî me – App-Logik (Klick-Prototyp, Phase 2)
+ * Ez Êzîdî me – App-Logik, Version 2 (anonym, Dorf im Mittelpunkt)
  *
- * Ansichten: sprachwahl → start → s1 (Einwilligung) → s2 (Person) → s3 (Familie)
- *            → s4 (Kontakt) → pruefen → fertig;  profil (eigene Daten, löschen)
- *
- * Sichtbarkeit V1: Nutzer sehen nur ihre eigenen Daten (lokale Kopie auf diesem Gerät).
- * Keine Suche, keine Liste, kein Stammbaum. Startseite zeigt nur die Gesamtzahl.
+ * Ansichten: sprachwahl → start (Zahlen + Rangliste) → formular → fertig
+ * Keine Namen, kein Telefon, keine E-Mail. Die Angaben werden im Handy verschlüsselt.
+ * Offen übertragen (für die öffentliche Zählung) werden nur: Orts-ID aus der Liste
+ * (oder "andere"), Wohnland-Code und Personenzahl.
  * Alle Nutzereingaben werden per textContent ausgegeben (kein innerHTML).
  */
 (function () {
@@ -13,24 +12,19 @@
 
   const T = window.EZM_TEXTE;
   const SPRACHEN = window.EZM_SPRACHEN;
-  const HERKUNFT = window.EZM_HERKUNFT;
+  const ORTE = window.EZM_ORTE || [];
+  const LAENDER = window.EZM_LAENDER || [];
   const KRYPTO = window.EZM_KRYPTO;
   const SPEICHER = window.EZM_SPEICHER;
   const LS_SPRACHE = 'ezm.sprache';
-  const LS_EINTRAG = 'ezm.meinEintrag';
-  const TEXTVERSION_EINWILLIGUNG = 'entwurf-2026-11';
-  const JAHR_MIN = 1900;
+  const LS_DABEI = 'ezm.dabei.v2';
+  const SEITE = 'https://ezezidime.org';
 
   const app = document.getElementById('app');
 
-  /* ---------- Browser-Speicher (immer mit try/catch) ---------- */
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
-  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* egal */ } }
-
-  function ladeEintrag() {
-    try { const s = lsGet(LS_EINTRAG); return s ? JSON.parse(s) : null; } catch (e) { return null; }
-  }
+  function dabei() { try { const s = lsGet(LS_DABEI); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
 
   /* ---------- Zustand ---------- */
   let sprache = T[lsGet(LS_SPRACHE)] ? lsGet(LS_SPRACHE) : null;
@@ -38,18 +32,11 @@
   let vorSprachwahl = null;
   let entwurf = neuerEntwurf();
   let fehler = {};
-  let meldung = null;          // { typ: 'ok' | 'fehler', key }
-  let letzteId = null;
-  let letzteLokalGespeichert = true;
+  let ergebnis = null;   // nach dem Senden: { ortId, ortName, n }
+  let rangCache = null;
 
   function neuerEntwurf() {
-    return {
-      einwilligung: false,
-      einwilligungZeit: null,
-      person: { vorname: '', vater: '', grossvater: '', geburtsdatum: '', geburtsort: '', herkunft: '', herkunft_andere: '' },
-      familie: { verheiratet: false, ehepartner: { vorname: '', vater: '', grossvater: '' }, kinder: [] },
-      kontakt: { telefon: '', email: '' }
-    };
+    return { ezidi: false, ort: '', land: '', stadt: '', personen: '', verheiratet: '', kinder: '' };
   }
 
   /* ---------- Hilfen ---------- */
@@ -58,30 +45,33 @@
     let s = (T[sprache] && T[sprache][key]);
     if (s === undefined) s = T.de[key];
     if (s === undefined) s = key;
-    if (vars && typeof s === 'string') for (const k in vars) s = s.replace('{' + k + '}', vars[k]);
+    if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
     return s;
   }
-  function ortName(key) {
-    const o = T[sprache] && T[sprache].orte;
-    return (o && o[key]) || key;
+  function fmtZahl(n) { try { return new Intl.NumberFormat(spr().locale).format(n); } catch (e) { return String(n); } }
+  function landName(code) {
+    if (code === 'xx') return t('otherCountry');
+    if (sprache === 'ku' && window.EZM_LAENDER_KU && window.EZM_LAENDER_KU[code]) return window.EZM_LAENDER_KU[code];
+    try { return new Intl.DisplayNames([spr().locale], { type: 'region' }).of(code.toUpperCase()) || code; }
+    catch (e) { return (window.EZM_LAENDER_KU && window.EZM_LAENDER_KU[code]) || code; }
   }
-  function fmtZahl(n) {
-    try { return new Intl.NumberFormat(spr().locale).format(n); } catch (e) { return String(n); }
+  const ORT_NACH_ID = {};
+  ORTE.forEach(o => { ORT_NACH_ID[o.id] = o; });
+  function ortAnzeige(o) { return o.n + ' – ' + o.r; }
+  function normal(s) { return String(s || '').trim().toLocaleLowerCase('tr').replace(/\s+/g, ' '); }
+  /* Eingabe → Orts-ID aus der Liste, sonst '' (dann Freitext) */
+  function findeOrt(text) {
+    const n = normal(text);
+    if (!n) return '';
+    const o = ORTE.find(x => normal(ortAnzeige(x)) === n || normal(x.n) === n);
+    return o ? o.id : '';
   }
-  function fmtDatum(iso) {
-    if (!iso) return t('none');
-    if (/^\d{4}$/.test(iso)) return iso;
-    const mm = /^(\d{4})-(\d{2})$/.exec(iso);
-    if (mm) { try { return new Date(Date.UTC(+mm[1], +mm[2] - 1, 1)).toLocaleDateString(spr().locale, { timeZone: 'UTC', year: 'numeric', month: 'long' }); } catch (e) { return iso; } }
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-    if (!m) return iso;
-    try {
-      return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString(spr().locale, { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' });
-    } catch (e) { return iso; }
+  function zahlFeld(s, min) {
+    if (s === '' || s === null || s === undefined) return null;
+    const n = Number(s);
+    return Number.isInteger(n) && n >= min && n <= 50 ? n : NaN;
   }
-  function leer(s) { return !s || !String(s).trim(); }
 
-  /* Element bauen – Text immer als Textknoten, nie als HTML */
   function h(tag, attrs) {
     const el = document.createElement(tag);
     if (attrs) {
@@ -110,19 +100,15 @@
     ansicht = name;
     if (opt.ersetzen) history.replaceState({ ansicht: name }, '');
     else history.pushState({ ansicht: name }, '');
-    fehler = opt.fehlerBehalten ? fehler : {};
+    if (!opt.fehlerBehalten) fehler = {};
     render();
     window.scrollTo(0, 0);
   }
-
   window.addEventListener('popstate', function (e) {
     const s = e.state && e.state.ansicht;
     if (!s) return;
-    ansicht = s;
-    fehler = {};
-    render();
+    ansicht = s; fehler = {}; render();
   });
-
   document.getElementById('kopf-start').addEventListener('click', () => { if (sprache) zeige('start'); });
   document.getElementById('kopf-sprache').addEventListener('click', () => {
     if (ansicht !== 'sprachwahl') vorSprachwahl = ansicht;
@@ -143,26 +129,13 @@
     band.textContent = sprache ? t('prototype') : '';
   }
 
-  /* ---------- Rendern ---------- */
   function render() {
-    // Schutz: ohne Sprache → Sprachwahl; Formularschritte nur nach Einwilligung
     if (!sprache) ansicht = 'sprachwahl';
-    if (['s2', 's3', 's4', 'pruefen'].indexOf(ansicht) >= 0 && !entwurf.einwilligung) ansicht = 's1';
-    // V1: ein Eintrag pro Gerät – wer schon eingetragen ist, landet im Profil
-    if (['s1', 's2', 's3', 's4', 'pruefen'].indexOf(ansicht) >= 0 && ladeEintrag()) ansicht = 'profil';
-
+    if (ansicht === 'formular' && dabei()) ansicht = 'start';
+    if (ansicht === 'fertig' && !ergebnis) ansicht = 'start';
     wendeSpracheAn();
-    const bauer = {
-      sprachwahl: ansichtSprachwahl, start: ansichtStart,
-      s1: ansichtEinwilligung, s2: ansichtPerson, s3: ansichtFamilie, s4: ansichtKontakt,
-      pruefen: ansichtPruefen, fertig: ansichtFertig, profil: ansichtProfil
-    }[ansicht] || ansichtStart;
+    const bauer = { sprachwahl: ansichtSprachwahl, start: ansichtStart, formular: ansichtFormular, fertig: ansichtFertig }[ansicht] || ansichtStart;
     app.replaceChildren(bauer());
-  }
-
-  function fokusErsterFehler() {
-    const el = app.querySelector('.fehler input, .fehler select, .haken.fehler input');
-    if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); }
   }
 
   /* ---------- Sprachwahl ---------- */
@@ -178,525 +151,203 @@
           type: 'button', class: 'sprachknopf', lang: s.code, dir: s.dir,
           'aria-current': s.code === sprache ? 'true' : null,
           onclick: () => {
-            sprache = s.code;
-            lsSet(LS_SPRACHE, s.code);
-            const ziel = vorSprachwahl || 'start';
-            vorSprachwahl = null;
-            zeige(ziel);
+            sprache = s.code; lsSet(LS_SPRACHE, s.code);
+            const ziel = vorSprachwahl || 'start'; vorSprachwahl = null; zeige(ziel);
           }
-        },
-          h('span', { class: 'sprachname', text: s.name }),
-          h('span', { class: 'appname', text: T[s.code].appName })
-        ))
+        }, h('span', { class: 'sprachname', text: s.name }), h('span', { class: 'appname', text: T[s.code].appName })))
       )
     );
+  }
+
+  /* ---------- Teilen ---------- */
+  function teilenKnopf(textKey, ortName) {
+    const msg = t(textKey, { ort: ortName || '' }) + ' ' + SEITE;
+    return h('a', { class: 'knopf knopf-teilen knopf-breit', href: 'https://wa.me/?text=' + encodeURIComponent(msg),
+      target: '_blank', rel: 'noopener', text: '📲 ' + t('shareVillage') });
   }
 
   /* ---------- Startseite ---------- */
-  function ansichtStart() {
-    const eintrag = ladeEintrag();
-    const zahl = h('div', { class: 'zaehler-zahl', 'aria-live': 'polite', text: '…' });
-    const zahlHinweis = h('div', { class: 'leise' });
-    // Gesamtzahl erst ab einer Grenze anzeigen (konfig.js: zaehlerAb), vorher bleibt die Karte unsichtbar
-    const ZAEHLER_AB = (window.EZM_KONFIG && +window.EZM_KONFIG.zaehlerAb) || 0;
-    const zaehlerKarte = h('div', { class: 'karte zaehler', hidden: true },
-      zahl,
-      h('div', { class: 'zaehler-text', text: t('totalEntries') }),
-      zahlHinweis
+  function balkenListe(eintraege, max) {
+    return h('ol', { class: 'rang' }, eintraege.map(e => h('li', null,
+      h('div', { class: 'rang-zeile' }, h('span', { class: 'rang-name', text: e.name }), h('span', { class: 'rang-zahl', text: fmtZahl(e.n) })),
+      h('div', { class: 'rang-balken', 'aria-hidden': 'true' }, h('span', { style: 'width:' + Math.max(4, Math.round(100 * e.n / max)) + '%' }))
+    )));
+  }
+
+  function fuelleRangliste(ziel, r) {
+    const zahlen = ziel.querySelector('.zahlen');
+    const listen = ziel.querySelector('.listen');
+    if (!r) { zahlen.replaceChildren(h('p', { class: 'leise mitte', text: t('notAvailable') })); return; }
+    zahlen.replaceChildren(
+      h('div', { class: 'zahl-block' }, h('div', { class: 'zaehler-zahl', text: fmtZahl(r.anzahl || 0) }), h('div', { class: 'leise', text: t('total') })),
+      h('div', { class: 'zahl-block' }, h('div', { class: 'zaehler-zahl', text: fmtZahl(r.personen || 0) }), h('div', { class: 'leise', text: t('personsTotal') }))
     );
-    SPEICHER.anzahl()
-      .then(n => { zahl.textContent = fmtZahl(n); if (n >= ZAEHLER_AB) zaehlerKarte.hidden = false; })
-      .catch(() => { /* ohne Zahl bleibt die Karte unsichtbar */ });
+    const orte = [];
+    let andere = 0;
+    for (const id in (r.orte || {})) {
+      if (ORT_NACH_ID[id]) orte.push({ name: ORT_NACH_ID[id].n, n: r.orte[id] });
+      else andere += r.orte[id];
+    }
+    orte.sort((a, b) => b.n - a.n);
+    const top = orte.slice(0, 10);
+    andere += orte.slice(10).reduce((s, e) => s + e.n, 0);
+    if (andere) top.push({ name: t('otherPlaces'), n: andere });
+    const laender = Object.keys(r.laender || {}).filter(c => LAENDER.indexOf(c) >= 0)
+      .map(c => ({ name: landName(c), n: r.laender[c] })).sort((a, b) => b.n - a.n).slice(0, 8);
+    listen.replaceChildren(...[
+      !top.length ? h('p', { class: 'leise mitte', text: t('noData') }) : null,
+      top.length ? h('div', { class: 'karte' }, h('h2', { text: t('rankingVillages') }), balkenListe(top, Math.max.apply(null, top.map(e => e.n)))) : null,
+      laender.length ? h('div', { class: 'karte' }, h('h2', { text: t('rankingCountries') }), balkenListe(laender, laender[0].n)) : null
+    ].filter(Boolean));
+  }
 
+  function ansichtStart() {
+    const ich = dabei();
     const kryptoOk = KRYPTO.verfuegbar();
-    const m = meldung; meldung = null;
-
+    const rang = h('div', null, h('div', { class: 'karte zahlen', 'aria-live': 'polite' }, h('div', { class: 'zaehler-zahl mitte', text: '…' })), h('div', { class: 'listen' }));
+    if (rangCache) fuelleRangliste(rang, rangCache);
+    SPEICHER.rangliste().then(r => { rangCache = r; fuelleRangliste(rang, r); }).catch(() => { if (!rangCache) fuelleRangliste(rang, null); });
     return h('div', null,
-      m ? h('div', { class: 'meldung meldung-' + m.typ, role: 'status', text: t(m.key) }) : null,
       !kryptoOk ? h('div', { class: 'meldung meldung-fehler', role: 'alert', text: t('cryptoUnavailable') }) : null,
       h('img', { src: 'assets/sonne.svg', alt: '', class: 'start-sonne' }),
       h('h1', { class: 'mitte', text: t('appName') }),
-      h('p', { class: 'mitte leise', text: t('tagline') }),
       h('p', { class: 'mitte frage', text: t('howMany') }),
       h('p', { class: 'mitte zaehlt', text: t('everyCounts') }),
-      h('p', { class: 'mitte', text: t('homeIntro') }),
-      zaehlerKarte,
-      eintrag
-        ? h('div', { class: 'knopfstapel' },
-            h('p', { class: 'mitte leise', text: t('alreadyRegistered') }),
-            h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', onclick: () => zeige('profil'), text: t('myData') }))
+      ich
+        ? h('div', { class: 'knopfstapel' }, h('p', { class: 'mitte', text: t('alreadyIn') }), teilenKnopf(ich.ortName ? 'shareMsgVillage' : 'shareMsg', ich.ortName))
         : h('div', { class: 'knopfstapel' },
-            h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', disabled: !kryptoOk, onclick: () => zeige('s1'), text: t('startEntry') }))
+            h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', disabled: !kryptoOk, onclick: () => zeige('formular'), text: t('startEntry') }),
+            h('p', { class: 'mitte leise', text: t('anonymNote') })),
+      rang
     );
   }
 
-  /* ---------- Schritt-Rahmen ---------- */
-  function schrittRahmen(n, titelKey, inhalt, weiter, zurueck, weiterText) {
-    return h('div', null,
-      h('div', { class: 'schritt-anzeige' },
-        h('div', { class: 'schritt-text', text: t('stepOf', { n: n }) }),
-        h('div', { class: 'schritt-balken', 'aria-hidden': 'true' }, [1, 2, 3, 4].map(i => h('span', { class: i <= n ? 'an' : '' })))
-      ),
-      h('div', { class: 'karte' }, h('h2', { text: t(titelKey) }), inhalt),
-      h('div', { class: 'knopfreihe' },
-        h('button', { type: 'button', class: 'knopf knopf-neben', onclick: zurueck, text: t('back') }),
-        h('button', { type: 'button', class: 'knopf knopf-haupt', onclick: weiter, text: weiterText || t('next') })
-      )
-    );
-  }
-
-  /* Textfeld, gebunden an obj[key]; Fehler-Schlüssel = fkey */
-  function textfeld(obj, key, labelKey, fkey, opt) {
-    opt = opt || {};
-    const id = 'f-' + fkey.replace(/[^a-z0-9]/gi, '-');
+  /* ---------- Formular ---------- */
+  function feld(labelKey, fkey, input, hinweisKey, pflicht) {
     const err = fehler[fkey];
-    const input = h('input', {
-      id: id, type: opt.type || 'text', name: fkey,
-      autocomplete: opt.autocomplete || 'off', inputmode: opt.inputmode || null,
-      maxlength: opt.maxlength || '80', max: opt.max || null, min: opt.min || null,
-      dir: opt.dir || 'auto',
-      'aria-required': opt.pflicht ? 'true' : null,
-      'aria-invalid': err ? 'true' : null,
-      'aria-describedby': err ? id + '-err' : null,
-      oninput: e => {
-        obj[key] = e.target.value;
-        if (fehler[fkey]) {           // Fehler verschwindet, sobald man tippt
-          delete fehler[fkey];
-          wrap.classList.remove('fehler');
-          input.removeAttribute('aria-invalid');
-          input.removeAttribute('aria-describedby');
-          if (errEl) errEl.remove();
-        }
-      }
-    });
-    input.value = obj[key] == null ? '' : obj[key];
-    const errEl = err ? h('div', { class: 'fehlertext', id: id + '-err', text: t(err) }) : null;
-    const wrap = h('div', { class: 'feld' + (err ? ' fehler' : '') },
-      h('label', { for: id }, t(labelKey), opt.pflicht ? h('span', { class: 'pflicht', 'aria-hidden': 'true', text: '*' }) : null),
-      input,
-      errEl
-    );
-    return wrap;
-  }
-
-  /* ---------- Schritt 1: Einwilligung ---------- */
-  function ansichtEinwilligung() {
-    const err = fehler.einwilligung;
-    const cb = h('input', {
-      type: 'checkbox', id: 'f-einwilligung',
-      'aria-invalid': err ? 'true' : null,
-      onchange: e => {
-        entwurf.einwilligung = e.target.checked;
-        entwurf.einwilligungZeit = e.target.checked ? new Date().toISOString() : null;
-      }
-    });
-    cb.checked = entwurf.einwilligung;
-
-    const inhalt = [
-      h('p', { text: t('consentIntro') }),
-      h('ul', { class: 'punkte' }, t('consentPoints').map(p => h('li', { text: p }))),
-      h('div', { class: 'hinweis-kinder', role: 'note', text: t('under16') }),
-      h('label', { class: 'haken' + (err ? ' fehler' : ''), for: 'f-einwilligung' },
-        cb, h('span', null, t('consentCheck'), h('span', { class: 'pflicht', 'aria-hidden': 'true', text: '*' }))),
-      err ? h('div', { class: 'fehlertext', role: 'alert', text: t(err) }) : null,
-      h('p', { class: 'entwurf-hinweis', text: t('draftNote') })
-    ];
-    return schrittRahmen(1, 'stepConsent', inhalt,
-      () => {
-        if (!entwurf.einwilligung) { fehler = { einwilligung: 'consentRequired' }; render(); fokusErsterFehler(); return; }
-        zeige('s2');
-      },
-      () => zeige('start'));
-  }
-
-  /* ---------- Schritt 2: Person ---------- */
-  function heuteIso() {
-    const d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-  function gueltigesDatum(s) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-    if (!m) return false;
-    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-    if (d.getUTCMonth() !== +m[2] - 1) return false;
-    return +m[1] >= JAHR_MIN && s <= heuteIso();
-  }
-
-  /* Geburtsdatum: Tag / Monat / Jahr als Auswahl – nur Jahr reicht.
-     Gespeichert als "JJJJ", "JJJJ-MM" oder "JJJJ-MM-TT". */
-  function datumFeld(p) {
-    const err = fehler['p.geburtsdatum'];
-    const pad = n => String(n).padStart(2, '0');
-    if (p.gj === undefined && p.geburtsdatum) {
-      const m = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(p.geburtsdatum);
-      if (m) { p.gj = m[1]; p.gm = m[2] ? String(+m[2]) : ''; p.gt = m[3] ? String(+m[3]) : ''; }
-    }
-    function setze() {
-      p.geburtsdatum = p.gj ? p.gj + (p.gm ? '-' + pad(p.gm) + (p.gt ? '-' + pad(p.gt) : '') : '') : '';
-    }
-    function auswahl(key, labelKey, optionen) {
-      const sel = h('select', { id: 'f-g' + key, 'aria-label': t(labelKey), onchange: e => { p[key] = e.target.value; setze(); } },
-        h('option', { value: '', text: t(labelKey) }),
-        optionen.map(o => h('option', { value: o[0], text: o[1] })));
-      sel.value = p[key] || '';
-      return sel;
-    }
-    const tage = []; for (let i = 1; i <= 31; i++) tage.push([String(i), String(i)]);
-    const monate = []; for (let i = 1; i <= 12; i++) {
-      let n = String(i);
-      try { n = new Date(Date.UTC(2000, i - 1, 1)).toLocaleDateString(spr().locale, { timeZone: 'UTC', month: 'long' }); } catch (e) {}
-      monate.push([String(i), n]);
-    }
-    const jahre = []; for (let j = new Date().getFullYear(); j >= JAHR_MIN; j--) jahre.push([String(j), String(j)]);
     return h('div', { class: 'feld' + (err ? ' fehler' : '') },
-      h('span', { class: 'label', text: t('birthDate') }),
-      h('div', { class: 'datum3' }, auswahl('gt', 'day', tage), auswahl('gm', 'month', monate), auswahl('gj', 'year', jahre)),
-      h('div', { class: 'leise', text: t('yearOnlyHint') }),
+      h('label', { for: input.id }, t(labelKey), pflicht ? h('span', { class: 'pflicht', 'aria-hidden': 'true', text: '*' }) : null),
+      hinweisKey ? h('div', { class: 'leise klein', text: t(hinweisKey) }) : null,
+      input,
       err ? h('div', { class: 'fehlertext', text: t(err) }) : null);
   }
+  function eingabe(id, key, opt) {
+    opt = opt || {};
+    const el = h('input', { id: id, type: opt.type || 'text', autocomplete: 'off', maxlength: opt.max || '60',
+      inputmode: opt.inputmode || null, list: opt.list || null, dir: 'auto', min: opt.min || null,
+      oninput: e => {
+        entwurf[key] = e.target.value;
+        if (fehler[key]) {
+          delete fehler[key];
+          const w = el.closest('.feld');
+          if (w) { w.classList.remove('fehler'); const f = w.querySelector('.fehlertext'); if (f) f.remove(); }
+        }
+      } });
+    el.value = entwurf[key];
+    return el;
+  }
 
-  function ansichtPerson() {
-    const p = entwurf.person;
-    const select = h('select', {
-      id: 'f-herkunft',
-      onchange: e => { p.herkunft = e.target.value; render(); }
-    },
+  function ansichtFormular() {
+    const haken = h('input', { type: 'checkbox', id: 'f-ezidi', onchange: e => { entwurf.ezidi = e.target.checked; } });
+    haken.checked = entwurf.ezidi;
+    const liste = h('datalist', { id: 'orte-liste' }, ORTE.map(o => h('option', { value: ortAnzeige(o) })));
+    const land = h('select', { id: 'f-land', onchange: e => { entwurf.land = e.target.value; } },
       h('option', { value: '', text: t('choose') }),
-      HERKUNFT.map(o => h('option', { value: o, text: ortName(o) }))
-    );
-    select.value = p.herkunft;
+      LAENDER.filter(c => c !== 'xx').map(c => ({ c: c, n: landName(c) })).sort((a, b) => a.n.localeCompare(b.n))
+        .map(x => h('option', { value: x.c, text: x.n })),
+      h('option', { value: 'xx', text: t('otherCountry') }));
+    land.value = entwurf.land;
+    const verh = h('select', { id: 'f-verh', onchange: e => { entwurf.verheiratet = e.target.value; } },
+      h('option', { value: '', text: t('choose') }), h('option', { value: 'ja', text: t('yes') }), h('option', { value: 'nein', text: t('no') }));
+    verh.value = entwurf.verheiratet;
 
-    const inhalt = [
-      h('p', { class: 'pflicht-legende', text: t('requiredLegend') }),
-      textfeld(p, 'vorname', 'firstName', 'p.vorname', { pflicht: true, autocomplete: 'given-name' }),
-      textfeld(p, 'vater', 'father', 'p.vater', { pflicht: true }),
-      textfeld(p, 'grossvater', 'grandfather', 'p.grossvater', { pflicht: true }),
-      datumFeld(p),
-      textfeld(p, 'geburtsort', 'birthPlace', 'p.geburtsort', {}),
-      h('div', { class: 'feld' }, h('label', { for: 'f-herkunft', text: t('origin') }), select),
-      p.herkunft === 'Andere'
-        ? textfeld(p, 'herkunft_andere', 'originOther', 'p.herkunft_andere', { pflicht: true })
-        : null
-    ];
-    return schrittRahmen(2, 'stepPerson', inhalt,
-      () => {
-        const f = {};
-        ['vorname', 'vater', 'grossvater'].forEach(k => { if (leer(p[k])) f['p.' + k] = 'errRequired'; });
-        if ((p.gt && (!p.gm || !p.gj)) || (p.gm && !p.gj)) f['p.geburtsdatum'] = 'errDate';
-        else if (/^\d{4}-\d{2}-\d{2}$/.test(p.geburtsdatum || '') && !gueltigesDatum(p.geburtsdatum)) f['p.geburtsdatum'] = 'errDate';
-        // nur Jahr + Monat: darf nicht nach dem aktuellen Monat liegen
-        else if (/^\d{4}-\d{2}$/.test(p.geburtsdatum || '') && p.geburtsdatum > heuteIso().slice(0, 7)) f['p.geburtsdatum'] = 'errDate';
-        if (p.herkunft === 'Andere' && leer(p.herkunft_andere)) f['p.herkunft_andere'] = 'errRequired';
-        if (Object.keys(f).length) { fehler = f; render(); fokusErsterFehler(); return; }
-        zeige('s3');
-      },
-      () => zeige('s1'));
-  }
-
-  /* ---------- Schritt 3: Familie ---------- */
-  function ansichtFamilie() {
-    const fam = entwurf.familie;
-    const jahrMax = new Date().getFullYear();
-
-    function jaNein(wert) {
-      return h('button', {
-        type: 'button', 'aria-pressed': fam.verheiratet === wert ? 'true' : 'false',
-        onclick: () => { fam.verheiratet = wert; fehler = {}; render(); },
-        text: wert ? t('yes') : t('no')
-      });
-    }
-
-    const kinderListe = fam.kinder.length === 0
-      ? h('p', { class: 'leise', text: t('noChildren') })
-      : fam.kinder.map((kind, i) => h('div', { class: 'unterbox' },
-          h('div', { class: 'unterbox-kopf' },
-            h('h3', { text: t('childN', { n: i + 1 }) }),
-            h('button', {
-              type: 'button', class: 'knopf knopf-gefahr knopf-klein',
-              onclick: () => { fam.kinder.splice(i, 1); fehler = {}; render(); },
-              text: t('removeChild')
-            })
-          ),
-          h('div', { class: 'zeile2' },
-            textfeld(kind, 'name', 'childName', 'k' + i + '.name', { pflicht: true }),
-            textfeld(kind, 'geburtsjahr', 'birthYear', 'k' + i + '.geburtsjahr', { inputmode: 'numeric', maxlength: '4', dir: 'ltr' })
-          )
-        ));
-
-    const inhalt = [
-      h('div', { class: 'feld' },
-        h('span', { class: 'label', id: 'l-verheiratet', text: t('married') }),
-        h('div', { class: 'wahl', role: 'group', 'aria-labelledby': 'l-verheiratet' }, jaNein(true), jaNein(false))
-      ),
-      fam.verheiratet
-        ? h('div', { class: 'unterbox' },
-            h('h3', { text: t('spouse') }),
-            textfeld(fam.ehepartner, 'vorname', 'firstName', 'e.vorname', { pflicht: true }),
-            textfeld(fam.ehepartner, 'vater', 'father', 'e.vater', {}),
-            textfeld(fam.ehepartner, 'grossvater', 'grandfather', 'e.grossvater', {}))
-        : null,
-      h('h3', { text: t('children') }),
-      kinderListe,
-      h('button', {
-        type: 'button', class: 'knopf knopf-neben knopf-breit',
-        onclick: () => {
-          fam.kinder.push({ name: '', geburtsjahr: '' });
-          render();
-          const felder = app.querySelectorAll('input[name$=".name"]');
-          if (felder.length) felder[felder.length - 1].focus();
-        },
-        text: t('addChild')
-      })
-    ];
-
-    return schrittRahmen(3, 'stepFamily', inhalt,
-      () => {
-        // ganz leere Kinderzeilen entfernen
-        fam.kinder = fam.kinder.filter(k => !leer(k.name) || !leer(k.geburtsjahr));
-        const f = {};
-        if (fam.verheiratet && leer(fam.ehepartner.vorname)) f['e.vorname'] = 'errRequired';
-        fam.kinder.forEach((k, i) => {
-          if (leer(k.name)) f['k' + i + '.name'] = 'errRequired';
-          if (!leer(k.geburtsjahr)) {
-            const j = String(k.geburtsjahr).trim();
-            if (!/^\d{4}$/.test(j) || +j < JAHR_MIN || +j > jahrMax) f['k' + i + '.geburtsjahr'] = 'errYear';
-          }
-        });
-        if (Object.keys(f).length) { fehler = f; render(); fokusErsterFehler(); return; }
-        zeige('s4');
-      },
-      () => zeige('s2'));
-  }
-
-  /* ---------- Schritt 4: Kontakt ---------- */
-  function ansichtKontakt() {
-    const k = entwurf.kontakt;
-    const inhalt = [
-      h('p', { class: 'leise', text: t('contactHint') }),
-      textfeld(k, 'telefon', 'phone', 'c.telefon', { type: 'tel', autocomplete: 'tel', inputmode: 'tel', dir: 'ltr', maxlength: '30' }),
-      textfeld(k, 'email', 'email', 'c.email', { type: 'email', autocomplete: 'email', inputmode: 'email', dir: 'ltr', maxlength: '120' })
-    ];
-    return schrittRahmen(4, 'stepContact', inhalt,
-      () => {
-        const f = {};
-        if (!leer(k.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(k.email.trim())) f['c.email'] = 'errEmail';
-        if (Object.keys(f).length) { fehler = f; render(); fokusErsterFehler(); return; }
-        zeige('pruefen');
-      },
-      () => zeige('s3'));
-  }
-
-  /* ---------- Datenanzeige (Prüfen + Profil) ---------- */
-  function zeile(labelKey, wert) {
-    // dir="auto": lateinische Namen bleiben auch in der arabischen Ansicht richtig herum
-    return h('div', null, h('dt', { text: t(labelKey) }), h('dd', { dir: 'auto', text: leer(wert) ? t('none') : wert }));
-  }
-  function herkunftText(p) {
-    if (!p.herkunft) return '';
-    if (p.herkunft === 'Andere') return ortName('Andere') + (p.herkunft_andere ? ': ' + p.herkunft_andere : '');
-    return ortName(p.herkunft);
-  }
-  function abschnitt(titelKey, zeilen, bearbeitenZiel) {
-    return h('div', { class: 'karte' },
-      h('div', { class: 'abschnitt-kopf' },
-        h('h3', { text: t(titelKey) }),
-        bearbeitenZiel ? h('button', { type: 'button', class: 'knopf-text', onclick: () => zeige(bearbeitenZiel), text: t('edit') }) : null
-      ),
-      h('dl', { class: 'daten' }, zeilen)
-    );
-  }
-  function datenAbschnitte(d, mitBearbeiten) {
-    const p = d.person, fam = d.familie, k = d.kontakt;
-    const kinder = (fam.kinder || []).filter(c => !leer(c.name) || !leer(c.geburtsjahr));
-    return [
-      abschnitt('stepPerson', [
-        zeile('firstName', p.vorname), zeile('father', p.vater), zeile('grandfather', p.grossvater),
-        zeile('birthDate', p.geburtsdatum ? fmtDatum(p.geburtsdatum) : ''), zeile('birthPlace', p.geburtsort),
-        zeile('origin', herkunftText(p))
-      ], mitBearbeiten && 's2'),
-      abschnitt('stepFamily', [
-        zeile('married', fam.verheiratet ? t('yes') : t('no')),
-        fam.verheiratet && fam.ehepartner
-          ? zeile('spouse', [fam.ehepartner.vorname, fam.ehepartner.vater, fam.ehepartner.grossvater].filter(x => !leer(x)).join(' · '))
-          : null,
-        zeile('children', kinder.length
-          ? kinder.map(c => c.name + (leer(c.geburtsjahr) ? '' : ' (' + c.geburtsjahr + ')')).join(', ')
-          : '')
-      ], mitBearbeiten && 's3'),
-      abschnitt('stepContact', [zeile('phone', k.telefon), zeile('email', k.email)], mitBearbeiten && 's4')
-    ];
-  }
-
-  /* ---------- Prüfen und absenden ---------- */
-  function baueDaten(id) {
-    const tr = s => (s == null ? '' : String(s)).trim();
-    const p = entwurf.person, fam = entwurf.familie, k = entwurf.kontakt;
-    const jetzt = new Date().toISOString();
-    return {
-      id: id,
-      version: 1,
-      erstellt: jetzt,
-      sprache: sprache,
-      einwilligung: { erteilt: true, zeitpunkt: entwurf.einwilligungZeit || jetzt, textversion: TEXTVERSION_EINWILLIGUNG },
-      person: {
-        vorname: tr(p.vorname), vater: tr(p.vater), grossvater: tr(p.grossvater),
-        geburtsdatum: p.geburtsdatum || '', geburtsort: tr(p.geburtsort),
-        herkunft: p.herkunft || '', herkunft_andere: p.herkunft === 'Andere' ? tr(p.herkunft_andere) : ''
-      },
-      familie: {
-        verheiratet: !!fam.verheiratet,
-        ehepartner: fam.verheiratet
-          ? { vorname: tr(fam.ehepartner.vorname), vater: tr(fam.ehepartner.vater), grossvater: tr(fam.ehepartner.grossvater) }
-          : null,
-        kinder: fam.kinder
-          .filter(c => !leer(c.name) || !leer(c.geburtsjahr))
-          .map(c => ({ name: tr(c.name), geburtsjahr: leer(c.geburtsjahr) ? null : parseInt(c.geburtsjahr, 10) }))
-      },
-      kontakt: { telefon: tr(k.telefon), email: tr(k.email) }
-    };
-  }
-
-  function ansichtPruefen() {
     const fehlerBox = h('div', { class: 'meldung meldung-fehler', role: 'alert', hidden: true });
     const knopf = h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', text: t('submit') });
-    knopf.addEventListener('click', async () => {
-      if (!KRYPTO.verfuegbar()) { fehlerBox.hidden = false; fehlerBox.textContent = t('cryptoUnavailable'); return; }
-      knopf.disabled = true;
-      knopf.replaceChildren(h('span', { class: 'laden', 'aria-hidden': 'true' }), t('sending'));
-      fehlerBox.hidden = true;
-      try {
-        const id = KRYPTO.neueId();
-        const daten = baueDaten(id);
-        const datei = await KRYPTO.dateiname(id);
-        const umschlag = await KRYPTO.verschluesseln('eintrag', daten);
-        await SPEICHER.eintragSenden(datei, umschlag);
-        letzteId = id;
-        letzteLokalGespeichert = lsSet(LS_EINTRAG, JSON.stringify({ daten: daten, datei: datei, schluessel_id: umschlag.schluessel_id }));
-        entwurf = neuerEntwurf();
-        zeige('fertig', { ersetzen: true });
-      } catch (e) {
-        console.error(e);
-        knopf.disabled = false;
-        knopf.textContent = t('submit');
-        fehlerBox.hidden = false;
-        fehlerBox.textContent = t('sendError');
-      }
-    });
+    knopf.addEventListener('click', () => absenden(knopf, fehlerBox));
 
     return h('div', null,
-      h('h2', { text: t('review') }),
-      h('p', { class: 'leise', text: t('reviewIntro') }),
-      datenAbschnitte(baueDaten(''), true),
+      h('h2', { text: t('formTitle') }),
+      h('p', { class: 'leise', text: t('anonymNote') }),
+      h('div', { class: 'karte' },
+        h('label', { class: 'haken' + (fehler.ezidi ? ' fehler' : ''), for: 'f-ezidi' }, haken, h('span', { class: 'haken-text', text: t('iAmEzidi') })),
+        fehler.ezidi ? h('div', { class: 'fehlertext', text: t(fehler.ezidi) }) : null,
+        feld('village', 'ort', eingabe('f-ort', 'ort', { list: 'orte-liste', max: '60' }), 'villageHint', true),
+        liste),
+      h('div', { class: 'karte' },
+        h('h3', { text: t('liveNow') }),
+        h('div', { class: 'feld' }, h('label', { for: 'f-land', text: t('country') }), land),
+        feld('city', 'stadt', eingabe('f-stadt', 'stadt', { max: '60' }))),
+      h('div', { class: 'karte' },
+        h('h3', { text: t('familyOpt') }),
+        feld('persons', 'personen', eingabe('f-pers', 'personen', { type: 'number', inputmode: 'numeric', min: '1', max: '2' })),
+        h('div', { class: 'feld' }, h('label', { for: 'f-verh', text: t('married') }), verh),
+        feld('children', 'kinder', eingabe('f-kind', 'kinder', { type: 'number', inputmode: 'numeric', min: '0', max: '2' }))),
+      h('p', { class: 'leise klein', text: t('privacy') }),
       fehlerBox,
       knopf,
-      h('div', { class: 'knopfstapel' },
-        h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('s4'), text: t('back') }))
+      h('div', { class: 'knopfstapel' }, h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('start'), text: t('back') }))
     );
+  }
+
+  async function absenden(knopf, fehlerBox) {
+    fehler = {};
+    if (!entwurf.ezidi) fehler.ezidi = 'iAmEzidiErr';
+    if (!String(entwurf.ort).trim()) fehler.ort = 'villageErr';
+    const personen = zahlFeld(entwurf.personen, 1), kinder = zahlFeld(entwurf.kinder, 0);
+    if (Number.isNaN(personen)) fehler.personen = 'numberErr';
+    if (Number.isNaN(kinder)) fehler.kinder = 'numberErr';
+    if (Object.keys(fehler).length) {
+      render();
+      const el = app.querySelector('.fehler input, .fehler select');
+      if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); }
+      return;
+    }
+    if (!KRYPTO.verfuegbar()) { fehlerBox.hidden = false; fehlerBox.textContent = t('cryptoUnavailable'); return; }
+    knopf.disabled = true;
+    knopf.replaceChildren(h('span', { class: 'laden', 'aria-hidden': 'true' }), t('sending'));
+    fehlerBox.hidden = true;
+    try {
+      const ortId = findeOrt(entwurf.ort);
+      const jetzt = new Date().toISOString();
+      const daten = {
+        version: 2, erstellt: jetzt.slice(0, 7), sprache: sprache, ezidi: true,
+        ort_id: ortId, ort_text: ortId ? '' : String(entwurf.ort).trim().slice(0, 60),
+        wohnland: entwurf.land || '', wohnstadt: String(entwurf.stadt).trim().slice(0, 60),
+        personen: personen, verheiratet: entwurf.verheiratet || '', kinder: kinder
+      };
+      const id = KRYPTO.neueId();
+      const datei = await KRYPTO.dateiname(id);
+      const umschlag = await KRYPTO.verschluesseln('eintrag', daten);
+      const antwort = await SPEICHER.eintragSenden(datei, umschlag, { ort: ortId || 'andere', land: daten.wohnland, personen: personen || 1 });
+      const ortName = ortId ? ORT_NACH_ID[ortId].n : '';
+      ergebnis = { ortId: ortId, ortName: ortName, n: antwort && typeof antwort.ort_anzahl === 'number' ? antwort.ort_anzahl : null };
+      lsSet(LS_DABEI, JSON.stringify({ ortName: ortName, zeit: jetzt.slice(0, 10) }));
+      rangCache = null;
+      entwurf = neuerEntwurf();
+      zeige('fertig', { ersetzen: true });
+    } catch (e) {
+      console.error(e);
+      knopf.disabled = false;
+      knopf.textContent = t('submit');
+      fehlerBox.hidden = false;
+      fehlerBox.textContent = t('sendError');
+    }
   }
 
   /* ---------- Fertig ---------- */
-  function idBlock(id) {
-    const kopieren = h('button', { type: 'button', class: 'knopf knopf-neben knopf-klein', text: t('copy') });
-    kopieren.addEventListener('click', () => {
-      if (navigator.clipboard) navigator.clipboard.writeText(id).then(() => { kopieren.textContent = t('copied'); }).catch(() => {});
-    });
-    return h('div', null,
-      h('div', { class: 'label', text: t('entryId') }),
-      h('div', { class: 'id-box', text: id }),
-      kopieren,
-      h('p', { class: 'leise', text: t('idHint') })
-    );
-  }
-
   function ansichtFertig() {
+    const e = ergebnis;
     return h('div', { class: 'mitte' },
       h('div', { class: 'erfolg-symbol', 'aria-hidden': 'true', text: '✓' }),
       h('h1', { text: t('thanks') }),
       h('p', { class: 'danke-text', text: t('thanksText') }),
-      h('p', { class: 'leise', text: t('sentOk') }),
-      letzteId ? h('div', { class: 'karte' }, idBlock(letzteId)) : null,
+      e.ortName && e.n ? h('div', { class: 'karte' }, h('p', { class: 'dorf-zahl', text: t('villageCount', { ort: e.ortName, n: fmtZahl(e.n) }) })) : null,
       h('div', { class: 'knopfstapel' },
-        letzteLokalGespeichert && ladeEintrag()
-          ? h('button', { type: 'button', class: 'knopf knopf-haupt knopf-breit', onclick: () => zeige('profil'), text: t('myData') })
-          : null,
-        h('a', { class: 'knopf knopf-teilen knopf-breit', href: 'https://wa.me/?text=' + encodeURIComponent(t('shareMsg') + ' https://ezezidime.org'), target: '_blank', rel: 'noopener', text: '📲 ' + t('shareFamily') }),
+        teilenKnopf(e.ortName ? 'shareMsgVillage' : 'shareMsg', e.ortName),
         h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('start'), text: t('toHome') }))
     );
   }
 
-  /* ---------- Profil: nur eigene Daten ---------- */
-  function ansichtProfil() {
-    const e = ladeEintrag();
-    if (!e || !e.daten) {
-      return h('div', null,
-        h('h2', { text: t('myData') }),
-        h('p', { text: t('noEntry') }),
-        h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('start'), text: t('toHome') }));
-    }
-    const d = e.daten;
-    return h('div', null,
-      h('h2', { text: t('myData') }),
-      h('p', { class: 'leise', text: t('localHint') }),
-      h('div', { class: 'karte' },
-        idBlock(d.id),
-        h('dl', { class: 'daten' }, zeile('sentOn', fmtDatum(d.erstellt)))),
-      datenAbschnitte(d, false),
-      h('div', { class: 'knopfstapel' },
-        h('button', { type: 'button', class: 'knopf knopf-gefahr knopf-breit', onclick: () => loeschDialog(e), text: t('deleteMine') }),
-        h('button', { type: 'button', class: 'knopf knopf-neben knopf-breit', onclick: () => zeige('start'), text: t('toHome') }))
-    );
-  }
-
-  function loeschDialog(e) {
-    const vorher = document.activeElement;
-    const fehlerBox = h('div', { class: 'meldung meldung-fehler', role: 'alert', hidden: true });
-    const ja = h('button', { type: 'button', class: 'knopf knopf-gefahr-voll', text: t('deleteYes') });
-    const nein = h('button', { type: 'button', class: 'knopf knopf-neben', text: t('cancel') });
-    const dialog = h('div', { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'd-titel', 'aria-describedby': 'd-text' },
-      h('h2', { id: 'd-titel', text: t('deleteMine') }),
-      h('p', { id: 'd-text', text: t('deleteConfirm') }),
-      fehlerBox,
-      h('div', { class: 'knopfreihe' }, nein, ja));
-    const hintergrund = h('div', { class: 'dialog-hintergrund', dir: spr().dir }, dialog);
-
-    function schliessen() {
-      document.removeEventListener('keydown', taste);
-      hintergrund.remove();
-      if (vorher && vorher.focus) vorher.focus();
-    }
-    function taste(ev) { if (ev.key === 'Escape' && !ja.disabled) schliessen(); }
-    document.addEventListener('keydown', taste);
-    nein.addEventListener('click', schliessen);
-    hintergrund.addEventListener('click', ev => { if (ev.target === hintergrund && !ja.disabled) schliessen(); });
-
-    ja.addEventListener('click', async () => {
-      ja.disabled = true; nein.disabled = true;
-      ja.replaceChildren(h('span', { class: 'laden', 'aria-hidden': 'true' }), t('deleting'));
-      try {
-        const id = e.daten.id;
-        const datei = await KRYPTO.dateiname(id);
-        const umschlag = await KRYPTO.verschluesseln('loeschantrag', { id: id, angefragt: new Date().toISOString() });
-        await SPEICHER.loeschantragSenden(datei, umschlag);
-        // Erst nach erfolgreichem Senden lokal löschen – sonst ginge die ID verloren.
-        lsDel(LS_EINTRAG);
-        letzteId = null;
-        schliessen();
-        meldung = { typ: 'ok', key: 'deleted' };
-        zeige('start', { ersetzen: true });
-      } catch (err) {
-        console.error(err);
-        ja.disabled = false; nein.disabled = false;
-        ja.textContent = t('deleteYes');
-        fehlerBox.hidden = false;
-        fehlerBox.textContent = t('deleteError');
-      }
-    });
-
-    document.body.append(hintergrund);
-    nein.focus();
-  }
-
-  /* ---------- Start ---------- */
   history.replaceState({ ansicht: ansicht }, '');
   render();
 })();
